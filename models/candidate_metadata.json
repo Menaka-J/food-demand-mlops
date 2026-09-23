@@ -1,0 +1,31 @@
+{
+    "model_name": "Linear Regression",
+    "target": "sales",
+    "features": [
+        "store",
+        "is_state_holiday",
+        "is_school_holiday",
+        "is_special_day",
+        "temperature_max",
+        "temperature_min",
+        "temperature_mean",
+        "sunshine_sum",
+        "precipitation_sum",
+        "year",
+        "month",
+        "day",
+        "day_of_week",
+        "week_of_year",
+        "quarter",
+        "is_weekend",
+        "sales_lag_1",
+        "sales_lag_7",
+        "sales_rolling_mean_7"
+    ],
+    "mae": 0.2685755437789722,
+    "rmse": 0.3475217130796383,
+    "r2": 0.8001205800725606,
+    "baseline_mae": 0.2592931952471491,
+    "baseline_rmse": 0.3829885886986439,
+    "baseline_r2": 0.7572407092557709
+}
