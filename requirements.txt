@@ -6,3 +6,9 @@ seaborn
 jupyter
 ipykernel
 mlflow
+fastapi
+uvicorn
+sqlalchemy
+pydantic
+streamlit
+requests
