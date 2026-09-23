@@ -1,0 +1,43 @@
+# Virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environment variables
+.env
+
+# IDE
+.vscode/
+
+# Python packaging
+*.egg-info/
+dist/
+build/
+
+# MLflow
+mlruns/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Generated models
+*.pkl
+*.joblib
+*.onnx
+
+# Processed/generated data
+data/processed/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
