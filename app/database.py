@@ -1,24 +1,40 @@
-from sqlalchemy import create_engine
-from sqlalchemy.orm import declarative_base, sessionmaker
+from pathlib import Path
 
-DATABASE_URL = "sqlite:///./data/app.db"
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+DATABASE_PATH = PROJECT_ROOT / "data" / "app.db"
+
+DATABASE_PATH.parent.mkdir(
+    parents=True,
+    exist_ok=True,
+)
+
+
+DATABASE_URL = f"sqlite:///{DATABASE_PATH.as_posix()}"
+
 
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"check_same_thread": False}
+    connect_args={
+        "check_same_thread": False
+    },
 )
+
 
 SessionLocal = sessionmaker(
-    autocommit=False,
+    bind=engine,
     autoflush=False,
-    bind=engine
+    autocommit=False,
 )
-
-Base = declarative_base()
 
 
 def get_db():
     db = SessionLocal()
+
     try:
         yield db
     finally:

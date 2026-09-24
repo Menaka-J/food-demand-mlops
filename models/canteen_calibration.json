@@ -1,0 +1,7 @@
+{
+    "canteen_name": "Smart Canteen",
+    "baseline_daily_quantity": 250,
+    "minimum_quantity": 50,
+    "maximum_quantity": 1000,
+    "safety_buffer_percent": 5
+}

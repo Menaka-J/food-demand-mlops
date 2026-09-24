@@ -1,172 +1,359 @@
 from datetime import date
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from .database import Base, engine, get_db
-from .models import DailyRecord
-from .schemas import (
+from app.database import SessionLocal
+from app.models import PredictionRecord
+from app.prediction_repository import (
+    save_actual,
+    save_prediction,
+)
+from app.prediction_service import PredictionService
+from app.schemas import (
+    ActualRequest,
+    ActualResponse,
     PredictionRequest,
     PredictionResponse,
-    ActualSalesRequest
 )
-from .features import create_prediction_features
-from .ml_model import predict
+from app.config import get_all_canteens
 
-
-Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="Smart Food Demand Forecasting API",
-    version="1.0.0"
+    description=(
+        "API for food-demand forecasting, "
+        "portion planning and MLOps monitoring."
+    ),
+    version="1.0.0",
 )
+
+
+prediction_service = PredictionService()
+
+
+def get_db():
+    db = SessionLocal()
+
+    try:
+        yield db
+    finally:
+        db.close()
+
 
 @app.get("/")
 def root():
     return {
-        "message": "Smart Food Demand Forecasting API",
-        "status": "running"
+        "application": (
+            "Smart Food Demand Forecasting "
+            "and Waste Reduction System"
+        ),
+        "status": "running",
+        "version": "1.0.0",
     }
-    
+
+
+@app.get("/canteens")
+def get_canteens():
+    return [
+        {
+            "store_id": canteen.store_id,
+            "name": canteen.name,
+            "city": canteen.city,
+            "state": canteen.state,
+        }
+        for canteen in get_all_canteens()
+    ]
+
+
 @app.post(
     "/predict",
-    response_model=PredictionResponse
+    response_model=PredictionResponse,
 )
-
-def predict_demand(
+def create_prediction(
     request: PredictionRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-
-    historical_records = (
-        db.query(DailyRecord)
-        .filter(
-            DailyRecord.store == request.store,
-            DailyRecord.actual_sales.isnot(None),
-            DailyRecord.date < request.date
-        )
-        .order_by(DailyRecord.date)
-        .all()
-    )
-
-    history = [
-        {
-            "date": record.date,
-            "actual_sales": record.actual_sales
-        }
-        for record in historical_records
-    ]
 
     try:
 
-        features = create_prediction_features(
-            current_date=request.date,
-            store=request.store,
+        # -------------------------------------------------
+        # Generate prediction
+        # -------------------------------------------------
 
+        result = prediction_service.predict(
+            store_id=request.store_id,
+            prediction_date=request.prediction_date,
             is_state_holiday=request.is_state_holiday,
             is_school_holiday=request.is_school_holiday,
             is_special_day=request.is_special_day,
-
-            temperature_max=request.temperature_max,
-            temperature_min=request.temperature_min,
-            temperature_mean=request.temperature_mean,
-
-            sunshine_sum=request.sunshine_sum,
-            precipitation_sum=request.precipitation_sum,
-
-            historical_records=history
         )
 
-        prediction = predict(features)
+        # -------------------------------------------------
+        # Save prediction
+        # -------------------------------------------------
 
-    except ValueError as e:
+        record = save_prediction(
+            db=db,
+            result=result,
+        )
+
+        return {
+            "record_id": record.id,
+
+            "store_id": record.store_id,
+            "canteen_name": record.canteen_name,
+            "city": result["city"],
+            "state": result["state"],
+
+            "prediction_date": record.prediction_date,
+
+            "is_state_holiday": bool(
+                record.is_state_holiday
+            ),
+
+            "is_school_holiday": bool(
+                record.is_school_holiday
+            ),
+
+            "is_special_day": bool(
+                record.is_special_day
+            ),
+
+            "temperature_max": (
+                record.temperature_max
+            ),
+
+            "temperature_min": (
+                record.temperature_min
+            ),
+
+            "temperature_mean": (
+                record.temperature_mean
+            ),
+
+            "sunshine_sum": (
+                record.sunshine_sum
+            ),
+
+            "precipitation_sum": (
+                record.precipitation_sum
+            ),
+
+            "scaled_prediction": (
+                record.scaled_prediction
+            ),
+
+            "expected_portions": (
+                record.expected_portions
+            ),
+
+            "safety_buffer": (
+                record.safety_buffer
+            ),
+
+            "recommended_portions": (
+                record.recommended_portions
+            ),
+
+            "model_version": (
+                record.model_version
+            ),
+
+            "calibration_version": (
+                record.calibration_version
+            ),
+        }
+
+    except ValueError as exc:
 
         raise HTTPException(
             status_code=400,
-            detail=str(e)
+            detail=str(exc),
         )
 
-    record = DailyRecord(
-        date=request.date,
-        store=request.store,
+    except Exception as exc:
 
-        is_state_holiday=request.is_state_holiday,
-        is_school_holiday=request.is_school_holiday,
-        is_special_day=request.is_special_day,
+        raise HTTPException(
+            status_code=500,
+            detail=f"Prediction failed: {str(exc)}",
+        )
 
-        temperature_max=request.temperature_max,
-        temperature_min=request.temperature_min,
-        temperature_mean=request.temperature_mean,
 
-        sunshine_sum=request.sunshine_sum,
-        precipitation_sum=request.precipitation_sum,
-
-        prediction=prediction,
-        actual_sales=None
-    )
-
-    db.add(record)
-    db.commit()
-
-    return {
-        "date": request.date,
-        "store": request.store,
-        "prediction": prediction
-    }
-    
-
-@app.post("/actual")
-def add_actual_sales(
-    request: ActualSalesRequest,
-    db: Session = Depends(get_db)
+@app.post(
+    "/actual/{record_id}",
+    response_model=ActualResponse,
+)
+def record_actual(
+    record_id: int,
+    request: ActualRequest,
+    db: Session = Depends(get_db),
 ):
 
-    record = (
-        db.query(DailyRecord)
-        .filter(
-            DailyRecord.date == request.date,
-            DailyRecord.store == request.store
-        )
-        .first()
-    )
+    try:
 
-    if record is None:
+        record = save_actual(
+            db=db,
+            record_id=record_id,
+            actual_portions=request.actual_portions,
+        )
+
+        return {
+            "record_id": record.id,
+
+            "canteen_name": (
+                record.canteen_name
+            ),
+
+            "prediction_date": (
+                record.prediction_date
+            ),
+
+            "expected_portions": (
+                record.expected_portions
+            ),
+
+            "actual_portions": (
+                record.actual_portions
+            ),
+
+            "absolute_error": (
+                record.absolute_error
+            ),
+
+            "actual_recorded_at": (
+                record.actual_recorded_at.isoformat()
+                if record.actual_recorded_at
+                else None
+            ),
+        }
+
+    except ValueError as exc:
+
         raise HTTPException(
-            status_code=404,
-            detail="Prediction record not found."
+            status_code=400,
+            detail=str(exc),
         )
 
-    record.actual_sales = request.actual_sales
+    except Exception as exc:
 
-    db.commit()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Saving actual failed: {str(exc)}",
+        )
 
-    return {
-        "message": "Actual sales recorded successfully.",
-        "date": request.date,
-        "store": request.store,
-        "actual_sales": request.actual_sales,
-        "prediction": record.prediction
-    }
-    
+
 @app.get("/records")
 def get_records(
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
 
     records = (
-        db.query(DailyRecord)
-        .order_by(DailyRecord.date.desc())
+        db.query(PredictionRecord)
+        .order_by(
+            PredictionRecord.prediction_date.desc()
+        )
         .all()
     )
 
     return [
         {
-            "id": r.id,
-            "date": r.date,
-            "store": r.store,
-            "prediction": r.prediction,
-            "actual_sales": r.actual_sales
+            "id": record.id,
+            "store_id": record.store_id,
+            "canteen_name": record.canteen_name,
+            "prediction_date": (
+                record.prediction_date
+            ),
+
+            "scaled_prediction": (
+                record.scaled_prediction
+            ),
+
+            "expected_portions": (
+                record.expected_portions
+            ),
+
+            "recommended_portions": (
+                record.recommended_portions
+            ),
+
+            "actual_portions": (
+                record.actual_portions
+            ),
+
+            "absolute_error": (
+                record.absolute_error
+            ),
+
+            "model_version": (
+                record.model_version
+            ),
+
+            "calibration_version": (
+                record.calibration_version
+            ),
         }
-        for r in records
+        for record in records
     ]
-    
+
+
+@app.get("/metrics")
+def get_metrics(
+    db: Session = Depends(get_db),
+):
+
+    records = (
+        db.query(PredictionRecord)
+        .filter(
+            PredictionRecord.actual_portions.isnot(None)
+        )
+        .all()
+    )
+
+    if not records:
+        return {
+            "records_with_actuals": 0,
+            "mae": None,
+            "rmse": None,
+            "mean_error": None,
+            "message": (
+                "No completed operational "
+                "records available yet."
+            ),
+        }
+
+    errors = [
+        record.expected_portions
+        - record.actual_portions
+        for record in records
+    ]
+
+    absolute_errors = [
+        abs(error)
+        for error in errors
+    ]
+
+    squared_errors = [
+        error ** 2
+        for error in errors
+    ]
+
+    mae = sum(absolute_errors) / len(
+        absolute_errors
+    )
+
+    rmse = (
+        sum(squared_errors) / len(
+            squared_errors
+        )
+    ) ** 0.5
+
+    mean_error = sum(errors) / len(errors)
+
+    return {
+        "records_with_actuals": len(records),
+        "mae": round(mae, 4),
+        "rmse": round(rmse, 4),
+        "mean_error": round(mean_error, 4),
+    }
