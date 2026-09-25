@@ -1,141 +1,255 @@
-from pathlib import Path
 import json
+from pathlib import Path
 
 import numpy as np
-import pandas as pd
 from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_absolute_error
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-CALIBRATION_DIR = PROJECT_ROOT / "models"
-CALIBRATION_DIR.mkdir(exist_ok=True)
-
-CALIBRATION_PATH = (
-    CALIBRATION_DIR / "operational_calibration.json"
+CALIBRATION_PATH = Path(
+    "models/operational_calibration.json"
 )
+
+MIN_OBSERVATIONS = 5
 
 
 class DemandCalibration:
 
-    def __init__(self):
-        self.calibrations = {}
+    def __init__(
+        self,
+        path=CALIBRATION_PATH
+    ):
 
-        if CALIBRATION_PATH.exists():
+        self.path = Path(path)
+
+        self.data = self._load()
+
+
+    # =====================================================
+    # LOAD CALIBRATION
+    # =====================================================
+
+    def _load(self):
+
+        if not self.path.exists():
+
+            return {
+                "version": 1,
+                "canteens": {}
+            }
+
+        try:
+
             with open(
-                CALIBRATION_PATH,
-                "r",
-                encoding="utf-8",
-            ) as f:
-                self.calibrations = json.load(f)
+                self.path,
+                "r"
+            ) as file:
 
-    def save(self):
+                data = json.load(file)
+
+        except (
+            json.JSONDecodeError,
+            OSError
+        ):
+
+            return {
+                "version": 1,
+                "canteens": {}
+            }
+
+
+        # -------------------------------------------------
+        # Ensure correct structure
+        # -------------------------------------------------
+
+        if "canteens" not in data:
+
+            return {
+                "version": 1,
+                "canteens": {}
+            }
+
+
+        return data
+
+
+    # =====================================================
+    # SAVE CALIBRATION
+    # =====================================================
+
+    def _save(self):
+
+        self.path.parent.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
         with open(
-            CALIBRATION_PATH,
-            "w",
-            encoding="utf-8",
-        ) as f:
+            self.path,
+            "w"
+        ) as file:
+
             json.dump(
-                self.calibrations,
-                f,
-                indent=4,
+                self.data,
+                file,
+                indent=4
             )
 
-    def has_calibration(self, store_id: str) -> bool:
-        return store_id in self.calibrations
 
-    def get_initial_prediction(
+    # =====================================================
+    # CHECK WHETHER A CANTEEN HAS CALIBRATION
+    # =====================================================
+
+    def has_calibration(
         self,
-        store_id: str,
-        scaled_prediction: float,
-        baseline_portions: int,
-    ) -> float:
-        """
-        Initial deployment calibration.
+        store_id: str
+    ) -> bool:
 
-        Before operational data exists, use the configured
-        canteen baseline as the starting operational estimate.
+        canteen = self.data[
+            "canteens"
+        ].get(store_id)
 
-        The scaled model output is still stored separately.
-        """
+        if canteen is None:
+            return False
 
-        return float(baseline_portions)
+        return (
+            canteen.get("method")
+            == "linear_calibration"
+            and
+            canteen.get("observations", 0)
+            >= MIN_OBSERVATIONS
+        )
+
+
+    # =====================================================
+    # PREDICT PORTIONS
+    # =====================================================
 
     def predict_portions(
         self,
         store_id: str,
         scaled_prediction: float,
-        baseline_portions: int,
-    ) -> float:
+        baseline_portions: int
+    ) -> int:
 
-        if store_id not in self.calibrations:
-            return self.get_initial_prediction(
-                store_id=store_id,
-                scaled_prediction=scaled_prediction,
-                baseline_portions=baseline_portions,
+        # -------------------------------------------------
+        # Check for learned calibration
+        # -------------------------------------------------
+
+        if self.has_calibration(store_id):
+
+            canteen = self.data[
+                "canteens"
+            ][store_id]
+
+            coefficient = float(
+                canteen["coefficient"]
             )
 
-        calibration = self.calibrations[store_id]
+            intercept = float(
+                canteen["intercept"]
+            )
 
-        intercept = calibration["intercept"]
-        coefficient = calibration["coefficient"]
+            predicted_portions = (
+                intercept
+                + coefficient * scaled_prediction
+            )
 
-        predicted = (
-            intercept
-            + coefficient * scaled_prediction
+            return max(
+                0,
+                round(predicted_portions)
+            )
+
+
+        # -------------------------------------------------
+        # No learned calibration yet
+        # -------------------------------------------------
+
+        return round(
+            baseline_portions
         )
 
-        return max(0.0, float(predicted))
 
-    def fit_store_calibration(
+    # =====================================================
+    # TRAIN CALIBRATION FOR ONE CANTEEN
+    # =====================================================
+
+    def fit_canteen(
         self,
         store_id: str,
-        records: pd.DataFrame,
+        scaled_predictions,
+        actual_portions
     ) -> dict:
-        """
-        Learn the relationship:
 
-            actual portions
-                     ↑
-                     |
-            scaled model prediction
+        observation_count = min(
+            len(scaled_predictions),
+            len(actual_portions)
+        )
 
-        for one canteen.
-        """
 
-        required_columns = {
-            "scaled_prediction",
-            "actual_portions",
-        }
+        # -------------------------------------------------
+        # Minimum data check
+        # -------------------------------------------------
 
-        missing = required_columns - set(records.columns)
+        if observation_count < MIN_OBSERVATIONS:
 
-        if missing:
-            raise ValueError(
-                f"Missing columns: {sorted(missing)}"
-            )
+            return {
+                "status": "insufficient_data",
+                "store_id": store_id,
+                "observations": observation_count,
+                "required_observations": MIN_OBSERVATIONS,
+                "message": (
+                    f"Need at least "
+                    f"{MIN_OBSERVATIONS} "
+                    f"completed observations. "
+                    f"Currently have "
+                    f"{observation_count}."
+                )
+            }
 
-        data = records.dropna(
-            subset=[
-                "scaled_prediction",
-                "actual_portions",
-            ]
-        ).copy()
 
-        if len(data) < 5:
-            raise ValueError(
-                "At least 5 operational observations "
-                "are required to fit calibration."
-            )
+        # -------------------------------------------------
+        # Convert data to arrays
+        # -------------------------------------------------
 
-        X = data[
-            ["scaled_prediction"]
-        ]
+        X = np.array(
+            scaled_predictions,
+            dtype=float
+        ).reshape(-1, 1)
 
-        y = data["actual_portions"]
+        y = np.array(
+            actual_portions,
+            dtype=float
+        )
+
+
+        # -------------------------------------------------
+        # Train linear calibration
+        # -------------------------------------------------
 
         model = LinearRegression()
-        model.fit(X, y)
+
+        model.fit(
+            X,
+            y
+        )
+
+
+        # -------------------------------------------------
+        # Calculate training error
+        # -------------------------------------------------
+
+        calibrated_predictions = model.predict(X)
+
+        training_mae = mean_absolute_error(
+            y,
+            calibrated_predictions
+        )
+
+
+        # -------------------------------------------------
+        # Extract parameters
+        # -------------------------------------------------
 
         coefficient = float(
             model.coef_[0]
@@ -145,24 +259,135 @@ class DemandCalibration:
             model.intercept_
         )
 
-        predictions = model.predict(X)
 
-        mae = float(
-            np.mean(
-                np.abs(
-                    predictions - y
-                )
-            )
-        )
+        # -------------------------------------------------
+        # Save calibration
+        # -------------------------------------------------
 
-        self.calibrations[store_id] = {
+        self.data["canteens"][store_id] = {
+
             "method": "linear_calibration",
-            "observations": int(len(data)),
+
+            "observations": observation_count,
+
             "coefficient": coefficient,
+
             "intercept": intercept,
-            "training_mae": mae,
+
+            "training_mae": float(
+                training_mae
+            )
         }
 
-        self.save()
 
-        return self.calibrations[store_id]
+        self._save()
+
+
+        # -------------------------------------------------
+        # Return result
+        # -------------------------------------------------
+
+        return {
+
+            "status": "calibrated",
+
+            "store_id": store_id,
+
+            "observations": observation_count,
+
+            "coefficient": coefficient,
+
+            "intercept": intercept,
+
+            "training_mae": float(
+                training_mae
+            )
+        }
+
+
+    # =====================================================
+    # GET ONE CANTEEN CALIBRATION STATUS
+    # =====================================================
+
+    def get_status(
+        self,
+        store_id: str,
+        completed_observations: int
+    ) -> dict:
+
+        canteen = self.data[
+            "canteens"
+        ].get(store_id)
+
+
+        # -------------------------------------------------
+        # No calibration
+        # -------------------------------------------------
+
+        if canteen is None:
+
+            return {
+
+                "store_id": store_id,
+
+                "observations": (
+                    completed_observations
+                ),
+
+                "required_observations": (
+                    MIN_OBSERVATIONS
+                ),
+
+                "status": "not_calibrated",
+
+                "method": "initial_baseline"
+            }
+
+
+        # -------------------------------------------------
+        # Existing calibration
+        # -------------------------------------------------
+
+        return {
+
+            "store_id": store_id,
+
+            "observations": canteen.get(
+                "observations",
+                completed_observations
+            ),
+
+            "required_observations": (
+                MIN_OBSERVATIONS
+            ),
+
+            "status": "calibrated",
+
+            "method": canteen.get(
+                "method"
+            ),
+
+            "coefficient": canteen.get(
+                "coefficient"
+            ),
+
+            "intercept": canteen.get(
+                "intercept"
+            ),
+
+            "training_mae": canteen.get(
+                "training_mae"
+            )
+        }
+
+
+    # =====================================================
+    # GET ALL CALIBRATIONS
+    # =====================================================
+
+    def get_all(self) -> dict:
+
+        return self.data.get(
+            "canteens",
+            {}
+        )

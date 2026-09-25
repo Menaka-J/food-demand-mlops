@@ -11,11 +11,21 @@ from app.prediction_features import (
 class PredictionService:
 
     def __init__(self):
+
         self.model = DemandModel()
+
         self.feature_builder = (
             PredictionFeatureBuilder()
         )
-        self.calibration = DemandCalibration()
+
+        self.calibration = (
+            DemandCalibration()
+        )
+
+
+    # =====================================================
+    # GENERATE PREDICTION
+    # =====================================================
 
     def predict(
         self,
@@ -26,10 +36,17 @@ class PredictionService:
         is_special_day: bool = False,
     ) -> dict:
 
-        canteen = get_canteen(store_id)
+        # -------------------------------------------------
+        # Get canteen configuration
+        # -------------------------------------------------
+
+        canteen = get_canteen(
+            store_id
+        )
+
 
         # -------------------------------------------------
-        # Build all model features
+        # Build model features
         # -------------------------------------------------
 
         feature_data = (
@@ -42,18 +59,26 @@ class PredictionService:
             )
         )
 
-        features = feature_data["features"]
+
+        features = feature_data[
+            "features"
+        ]
+
 
         # -------------------------------------------------
         # Generate original ML prediction
         # -------------------------------------------------
 
-        scaled_prediction = self.model.predict(
-            features
+        scaled_prediction = (
+            self.model.predict(
+                features
+            )
         )
 
+
         # -------------------------------------------------
-        # Convert scaled demand to portions
+        # Convert scaled prediction
+        # to operational portions
         # -------------------------------------------------
 
         expected_portions = (
@@ -66,6 +91,7 @@ class PredictionService:
             )
         )
 
+
         # -------------------------------------------------
         # Safety buffer
         # -------------------------------------------------
@@ -76,62 +102,112 @@ class PredictionService:
             / 100
         )
 
+
+        # -------------------------------------------------
+        # Recommended preparation
+        # -------------------------------------------------
+
         recommended_portions = round(
             expected_portions
             + safety_buffer
         )
 
+
+        # -------------------------------------------------
+        # Calibration version
+        # -------------------------------------------------
+
+        if self.calibration.has_calibration(
+            store_id
+        ):
+
+            calibration_version = (
+                "learned_linear_calibration"
+            )
+
+        else:
+
+            calibration_version = (
+                "initial_baseline"
+            )
+
+
+        # -------------------------------------------------
+        # Return complete prediction
+        # -------------------------------------------------
+
         return {
+
             "store_id": store_id,
+
             "canteen_name": canteen.name,
+
             "city": canteen.city,
+
             "state": canteen.state,
+
 
             "prediction_date": (
                 prediction_date.isoformat()
             ),
 
+
             "calendar": {
+
                 "is_state_holiday": (
                     is_state_holiday
                 ),
+
                 "is_school_holiday": (
                     is_school_holiday
                 ),
+
                 "is_special_day": (
                     is_special_day
                 ),
             },
 
+
             "weather": feature_data[
                 "weather"
             ],
 
-            "historical_features": feature_data[
-                "historical"
-            ],
+
+            "historical_features": (
+                feature_data[
+                    "historical"
+                ]
+            ),
+
 
             "scaled_prediction": (
                 scaled_prediction
             ),
 
+
             "expected_portions": (
-                round(expected_portions)
+                round(
+                    expected_portions
+                )
             ),
 
-            "safety_buffer": safety_buffer,
+
+            "safety_buffer": (
+                safety_buffer
+            ),
+
 
             "recommended_portions": (
                 recommended_portions
             ),
 
-            "model_version": "SmartFoodDemandModel/1",
+
+            "model_version": (
+                "SmartFoodDemandModel/1"
+            ),
+
 
             "calibration_version": (
-                "initial_baseline"
-                if not self.calibration.has_calibration(
-                    store_id
-                )
-                else "learned_linear_calibration"
+                calibration_version
             ),
         }

@@ -12,3 +12,7 @@ sqlalchemy
 pydantic
 streamlit
 requests
+
+#streamlit run app\streamlit_app.py
+
+#uvicorn app.main:app --reload
