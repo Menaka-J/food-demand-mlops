@@ -26,7 +26,8 @@ COPY data/ /app/data/
 COPY deployment/ /app/deployment/
 COPY render-start.sh /app/render-start.sh
 
-RUN chmod +x /app/render-start.sh \
+RUN sed -i 's/\r$//' /app/render-start.sh \
+    && chmod +x /app/render-start.sh \
     && mkdir -p /var/data/mlflow-artifacts
 
 EXPOSE 10000
