@@ -16,8 +16,8 @@ mlflow server \
   --host 127.0.0.1 \
   --port 5000 \
   --backend-store-uri "sqlite:///$DATA_DIR/mlflow.db" \
-  --artifacts-destination "$DATA_DIR/mlflow-artifacts" \
-  > "$DATA_DIR/mlflow.log" 2>&1 &
+    --artifacts-destination "$DATA_DIR/mlflow-artifacts" \
+  2>&1 | tee "$DATA_DIR/mlflow.log" &
 
 MLFLOW_PID=$!
 
