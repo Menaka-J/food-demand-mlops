@@ -1,13 +1,22 @@
+
+import os
+
 import mlflow
 import mlflow.sklearn
 import pandas as pd
 
 
-MODEL_URI = "models:/SmartFoodDemandModel/1"
+MODEL_URI = os.getenv(
+    "MODEL_URI",
+    "models:/SmartFoodDemandModel/1",
+)
 
-TRACKING_URI = (
-    "sqlite:///C:/Users/Menaka/"
-    "Videos/smart-food-demand-mlops/mlflow.db"
+TRACKING_URI = os.getenv(
+    "MLFLOW_TRACKING_URI",
+    (
+        "sqlite:///C:/Users/Menaka/"
+        "Videos/smart-food-demand-mlops/mlflow.db"
+    ),
 )
 
 
@@ -17,23 +26,14 @@ class DemandModel:
         mlflow.set_tracking_uri(TRACKING_URI)
 
         print("Loading MLflow model...")
+        print(f"Tracking URI: {TRACKING_URI}")
         print(f"Model URI: {MODEL_URI}")
 
-        self.model = mlflow.sklearn.load_model(
-            MODEL_URI
-        )
+        self.model = mlflow.sklearn.load_model(MODEL_URI)
 
         print("MLflow model loaded successfully.")
 
     def predict(self, features: dict) -> float:
-        """
-        Generate the original model's scaled demand prediction.
-
-        The saved sklearn pipeline expects a pandas DataFrame
-        because its preprocessing pipeline selects columns
-        by their names.
-        """
-
         feature_order = [
             "store",
             "is_state_holiday",
@@ -56,7 +56,6 @@ class DemandModel:
             "sales_rolling_mean_7",
         ]
 
-        # Make sure every expected feature exists.
         missing_features = [
             column
             for column in feature_order
@@ -69,9 +68,6 @@ class DemandModel:
                 + ", ".join(missing_features)
             )
 
-        # IMPORTANT:
-        # The trained sklearn pipeline expects a DataFrame
-        # with the original feature names.
         input_data = pd.DataFrame(
             [
                 {
@@ -81,8 +77,6 @@ class DemandModel:
             ]
         )
 
-        prediction = self.model.predict(
-            input_data
-        )[0]
+        prediction = self.model.predict(input_data)[0]
 
         return float(prediction)

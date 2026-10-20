@@ -1,0 +1,28 @@
+
+services:
+  - type: web
+    name: smart-food-demand-mlops
+    runtime: docker
+    plan: starter
+    healthCheckPath: /_stcore/health
+
+    disk:
+      name: smart-food-demand-data
+      mountPath: /var/data
+      sizeGB: 1
+
+    envVars:
+      - key: DATA_DIR
+        value: /var/data
+
+      - key: DATABASE_URL
+        value: sqlite:////var/data/app.db
+
+      - key: MLFLOW_TRACKING_URI
+        value: http://127.0.0.1:5000
+
+      - key: MODEL_URI
+        value: models:/SmartFoodDemandModel/1
+
+      - key: CALIBRATION_PATH
+        value: /var/data/operational_calibration.json

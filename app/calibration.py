@@ -1,13 +1,13 @@
 import json
 from pathlib import Path
-
+import os 
 import numpy as np
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error
 
 
 CALIBRATION_PATH = Path(
-    "models/operational_calibration.json"
+    os.getenv("CALIBRATION_PATH", "models/operational_calibration.json",)
 )
 
 MIN_OBSERVATIONS = 5

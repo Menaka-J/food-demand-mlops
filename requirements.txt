@@ -5,13 +5,15 @@ matplotlib
 seaborn
 jupyter
 ipykernel
-mlflow
+mlflow==3.16.1
 fastapi
 uvicorn
 sqlalchemy
 pydantic
 streamlit
 requests
+joblib
+skops
 
 #streamlit run app\streamlit_app.py
 

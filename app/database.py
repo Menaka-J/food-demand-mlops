@@ -1,5 +1,5 @@
 from pathlib import Path
-
+import os 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -14,7 +14,7 @@ DATABASE_PATH.parent.mkdir(
 )
 
 
-DATABASE_URL = f"sqlite:///{DATABASE_PATH.as_posix()}"
+DATABASE_URL = os.getenv("DATABASE_URL","sqlite:///data/app.db",)
 
 
 engine = create_engine(

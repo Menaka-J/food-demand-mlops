@@ -1,1173 +1,365 @@
 import streamlit as st
 import requests
 from datetime import date
+import os 
 
-
-# =========================================================
-# CONFIGURATION
-# =========================================================
-
-API_URL = "http://127.0.0.1:8000"
-
-
-# =========================================================
-# STREAMLIT PAGE CONFIGURATION
-# =========================================================
+API_URL = os.getenv("API_URL","http://127.0.0.1:8000")
+TIMEOUT = 10
 
 st.set_page_config(
     page_title="Smart Food Demand Planner",
     page_icon="🍽️",
-    layout="wide"
+    layout="wide",
+)
+
+st.title("Smart Food Demand Planner")
+
+# Simple top navigation: tabs appear across the top of the page.
+food_tab, dashboard_tab, calibration_tab = st.tabs(
+    ["Food Plan", " Dashboard", " Operational Calibration"]
 )
 
 
-# =========================================================
-# PAGE HEADER
-# =========================================================
-
-st.title("🍽️ Smart Food Demand Planner")
-st.caption("Food demand prediction and waste reduction system")
-
-st.divider()
-
-
-# =========================================================
-# LOAD CANTEENS FROM FASTAPI
-# =========================================================
-
-try:
-
-    response = requests.get(
-        f"{API_URL}/canteens",
-        timeout=5
-    )
-
+def api_get(path, timeout=TIMEOUT):
+    response = requests.get(f"{API_URL}{path}", timeout=timeout)
     response.raise_for_status()
-
-    canteens = response.json()
-
-except requests.RequestException as e:
-
-    st.error(
-        f"Unable to connect to the FastAPI backend: {e}"
-    )
-
-    st.stop()
+    return response.json()
 
 
-# =========================================================
-# CANTEEN SELECTION
-# =========================================================
-
-st.subheader("📍 Canteen Details")
-
-canteen_names = [
-    canteen["name"]
-    for canteen in canteens
-]
-
-selected_name = st.selectbox(
-    "Canteen",
-    canteen_names
-)
-
-selected_canteen = next(
-    canteen
-    for canteen in canteens
-    if canteen["name"] == selected_name
-)
-
-st.info(
-    f"**Location:** "
-    f"{selected_canteen['city']}, "
-    f"{selected_canteen['state']}"
-)
+def api_post(path, payload, timeout=30):
+    response = requests.post(f"{API_URL}{path}", json=payload, timeout=timeout)
+    if not response.ok:
+        try:
+            detail = response.json().get("detail", response.text)
+        except ValueError:
+            detail = response.text
+        raise RuntimeError(f"HTTP {response.status_code}: {detail}")
+    return response.json()
 
 
-# =========================================================
-# PREDICTION DATE
-# =========================================================
-
-prediction_date = st.date_input(
-    "Prediction Date",
-    value=date.today()
-)
-
-
-# =========================================================
-# CALENDAR INFORMATION
-# =========================================================
-
-st.subheader("📅 Calendar Information")
-
-col1, col2, col3 = st.columns(3)
-
-
-with col1:
-
-    state_holiday = st.selectbox(
-        "State Holiday",
-        ["Normal Day", "Holiday"]
-    )
-
-
-with col2:
-
-    school_holiday = st.selectbox(
-        "School Holiday",
-        ["Normal Day", "Holiday"]
-    )
-
-
-with col3:
-
-    special_day = st.selectbox(
-        "Special Day",
-        ["Normal Day", "Special Day"]
-    )
-
-
-# Convert UI selections to Boolean values
-
-is_state_holiday = (
-    state_holiday == "Holiday"
-)
-
-is_school_holiday = (
-    school_holiday == "Holiday"
-)
-
-is_special_day = (
-    special_day == "Special Day"
-)
-
-
-st.divider()
-
-
-# =========================================================
-# GENERATE FOOD PLAN
-# =========================================================
-
-if st.button(
-    "🍽️ GENERATE FOOD PLAN",
-    type="primary",
-    use_container_width=True
-):
-
-    request_data = {
-
-        "store_id": (
-            selected_canteen["store_id"]
-        ),
-
-        "prediction_date": (
-            prediction_date.isoformat()
-        ),
-
-        "is_state_holiday": (
-            is_state_holiday
-        ),
-
-        "is_school_holiday": (
-            is_school_holiday
-        ),
-
-        "is_special_day": (
-            is_special_day
-        )
-    }
-
-
+def load_canteens():
     try:
-
-        response = requests.post(
-            f"{API_URL}/predict",
-            json=request_data,
-            timeout=30
-        )
-
-
-        if response.status_code == 200:
-
-            result = response.json()
-
-            st.session_state[
-                "prediction"
-            ] = result
-
-            # Clear previous actual result
-            st.session_state.pop(
-                "actual_saved",
-                None
-            )
-
-        else:
-
-            st.error(
-                f"Prediction failed: "
-                f"{response.text}"
-            )
-
-
-    except requests.RequestException as e:
-
+        canteens = api_get("/canteens")
+        if not canteens:
+            st.error("No canteens were returned by the backend.")
+            st.stop()
+        return canteens
+    except requests.RequestException as exc:
         st.error(
-            f"Unable to connect to FastAPI: {e}"
+            f"Cannot connect to FastAPI at {API_URL}. "
+            f"Start the backend and refresh this page. Details: {exc}"
+        )
+        st.stop()
+
+
+def portion_text(value):
+    if value is None:
+        return "N/A"
+    try:
+        return f"{float(value):,.0f} portions"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def completed_records(records):
+    return [r for r in records if r.get("actual_portions") is not None]
+
+
+def render_food_plan(canteens):
+    st.subheader("Create today's food plan")
+
+    names = [c["name"] for c in canteens]
+    selected_name = st.selectbox("Canteen", names, key="food_canteen")
+    canteen = next(c for c in canteens if c["name"] == selected_name)
+
+    col_location, col_date = st.columns(2)
+    with col_location:
+        st.info(
+            f"**Location:** {canteen.get('city', 'N/A')}, "
+            f"{canteen.get('state', 'N/A')}"
+        )
+    with col_date:
+        prediction_date = st.date_input(
+            "Prediction date", value=date.today(), key="food_prediction_date"
         )
 
-
-# =========================================================
-# DISPLAY PREDICTION
-# =========================================================
-
-if "prediction" in st.session_state:
-
-    result = st.session_state[
-        "prediction"
-    ]
-
-
-    # =====================================================
-    # WEATHER INFORMATION
-    # =====================================================
-
-    st.divider()
-
-    st.subheader(
-        "🌦️ Weather Information"
-    )
-
-    weather_col1, weather_col2, weather_col3, weather_col4 = (
-        st.columns(4)
-    )
-
-
-    with weather_col1:
-
-        st.metric(
-            "Maximum Temperature",
-            f"{result['temperature_max']:.1f} °C"
+    st.markdown("**Day details**")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        state_holiday = st.selectbox(
+            "State holiday", ["Normal Day", "Holiday"], key="food_state_holiday"
         )
-
-
-    with weather_col2:
-
-        st.metric(
-            "Minimum Temperature",
-            f"{result['temperature_min']:.1f} °C"
+    with c2:
+        school_holiday = st.selectbox(
+            "School holiday", ["Normal Day", "Holiday"], key="food_school_holiday"
         )
-
-
-    with weather_col3:
-
-        st.metric(
-            "Average Temperature",
-            f"{result['temperature_mean']:.1f} °C"
+    with c3:
+        special_day = st.selectbox(
+            "Special day", ["Normal Day", "Special Day"], key="food_special_day"
         )
-
-
-    with weather_col4:
-
-        st.metric(
-            "Rainfall",
-            f"{result['precipitation_sum']:.1f} mm"
-        )
-
-
-    st.caption(
-        f"☀️ Sunshine: "
-        f"{result['sunshine_sum']:.2f} hours"
-    )
-
-
-    # =====================================================
-    # FOOD PLAN
-    # =====================================================
-
-    st.divider()
-
-    st.subheader(
-        "🍱 Today's Food Plan"
-    )
-
-    plan_col1, plan_col2, plan_col3 = (
-        st.columns(3)
-    )
-
-
-    with plan_col1:
-
-        st.metric(
-            "Expected Demand",
-            f"{result['expected_portions']:.0f} portions"
-        )
-
-
-    with plan_col2:
-
-        st.metric(
-            "Safety Buffer",
-            f"{result['safety_buffer']} portions"
-        )
-
-
-    with plan_col3:
-
-        st.metric(
-            "Recommended Preparation",
-            f"{result['recommended_portions']} portions"
-        )
-
-
-    # =====================================================
-    # FINAL RECOMMENDATION
-    # =====================================================
-
-    st.success(
-        f"### 🍱 Prepare "
-        f"{result['recommended_portions']} portions"
-    )
-
-
-    # =====================================================
-    # END-OF-DAY ACTUAL PORTIONS
-    # =====================================================
-
-    st.divider()
-
-    st.subheader(
-        "📊 End-of-Day Record"
-    )
-
-    st.write(
-        "After the meal service ends, enter the actual "
-        "number of portions sold or consumed."
-    )
-
-
-    actual_portions = st.number_input(
-        "Actual Portions Sold / Consumed",
-        min_value=0,
-        step=1,
-        value=0
-    )
-
 
     if st.button(
-        "💾 SAVE ACTUAL",
-        use_container_width=True
+        "Generate Food Plan",
+        type="primary",
+        use_container_width=True,
+        key="generate_food_plan",
     ):
-
-        actual_data = {
-            "actual_portions": actual_portions
+        payload = {
+            "store_id": canteen["store_id"],
+            "prediction_date": prediction_date.isoformat(),
+            "is_state_holiday": state_holiday == "Holiday",
+            "is_school_holiday": school_holiday == "Holiday",
+            "is_special_day": special_day == "Special Day",
         }
-
-
         try:
-
-            response = requests.post(
-                f"{API_URL}/actual/"
-                f"{result['record_id']}",
-                json=actual_data,
-                timeout=10
-            )
-
-
-            if response.status_code == 200:
-
-                actual_result = (
-                    response.json()
-                )
-
-                st.session_state[
-                    "actual_saved"
-                ] = actual_result
-
-                st.success(
-                    "Actual portions saved successfully!"
-                )
-
-            else:
-
-                st.error(
-                    "Unable to save actual portions: "
-                    f"{response.text}"
-                )
-
-
-        except requests.RequestException as e:
-
-            st.error(
-                "Unable to connect to FastAPI: "
-                f"{e}"
-            )
-
-
-    # =====================================================
-    # DISPLAY ACTUAL VS PREDICTED
-    # =====================================================
-
-    if "actual_saved" in st.session_state:
-
-        actual_result = (
-            st.session_state[
-                "actual_saved"
-            ]
-        )
-
-
-        st.divider()
-
-        st.subheader(
-            "📈 Prediction vs Actual"
-        )
-
-
-        comparison_col1, comparison_col2, comparison_col3 = (
-            st.columns(3)
-        )
-
-
-        with comparison_col1:
-
-            st.metric(
-                "Expected Demand",
-                f"{actual_result['expected_portions']:.0f} portions"
-            )
-
-
-        with comparison_col2:
-
-            st.metric(
-                "Actual Sold",
-                f"{actual_result['actual_portions']} portions"
-            )
-
-
-        with comparison_col3:
-
-            st.metric(
-                "Absolute Error",
-                f"{actual_result['absolute_error']:.0f} portions"
-            )
-
-
-        difference = (
-            actual_result["actual_portions"]
-            - actual_result["expected_portions"]
-        )
-
-
-        if difference > 0:
-
-            st.info(
-                f"Actual demand was "
-                f"{abs(difference):.0f} portions "
-                f"higher than expected."
-            )
-
-        elif difference < 0:
-
-            st.info(
-                f"Actual demand was "
-                f"{abs(difference):.0f} portions "
-                f"lower than expected."
-            )
-
-        else:
-
-            st.success(
-                "Prediction exactly matched "
-                "the actual demand."
-            )
-
-
-# =========================================================
-# MLOPS MONITORING DASHBOARD
-# =========================================================
-
-st.divider()
-
-st.header(
-    "📊 MLOps Monitoring Dashboard"
-)
-
-st.caption(
-    "Monitor prediction accuracy using completed "
-    "operational records."
-)
-
-
-# =========================================================
-# LOAD MONITORING DATA
-# =========================================================
-
-try:
-
-    metrics_response = requests.get(
-        f"{API_URL}/metrics",
-        timeout=10
-    )
-
-    records_response = requests.get(
-        f"{API_URL}/records",
-        timeout=10
-    )
-
-    metrics_response.raise_for_status()
-    records_response.raise_for_status()
-
-    metrics = metrics_response.json()
-    records = records_response.json()
-
-
-except requests.RequestException as e:
-
-    st.error(
-        f"Unable to load monitoring data: {e}"
-    )
-
-
-else:
-
-    # =====================================================
-    # OVERALL PERFORMANCE
-    # =====================================================
-
-    st.subheader(
-        "📈 Overall Model Performance"
-    )
-
-
-    metric_col1, metric_col2, metric_col3, metric_col4 = (
-        st.columns(4)
-    )
-
-
-    with metric_col1:
-
-        st.metric(
-            "Completed Records",
-            metrics.get(
-                "records_with_actuals",
-                0
-            )
-        )
-
-
-    with metric_col2:
-
-        mae = metrics.get("mae")
-
-        st.metric(
-            "MAE",
-            (
-                f"{mae:.2f} portions"
-                if mae is not None
-                else "N/A"
-            )
-        )
-
-
-    with metric_col3:
-
-        rmse = metrics.get("rmse")
-
-        st.metric(
-            "RMSE",
-            (
-                f"{rmse:.2f} portions"
-                if rmse is not None
-                else "N/A"
-            )
-        )
-
-
-    with metric_col4:
-
-        mean_error = metrics.get(
-            "mean_error"
-        )
-
-        st.metric(
-            "Mean Error",
-            (
-                f"{mean_error:+.2f} portions"
-                if mean_error is not None
-                else "N/A"
-            )
-        )
-
-
-    # =====================================================
-    # ERROR INTERPRETATION
-    # =====================================================
-
-    if mean_error is not None:
-
-        if mean_error > 0:
-
-            st.info(
-                "Predictions are currently higher "
-                "than actual demand by an average of "
-                f"{mean_error:.2f} portions."
-            )
-
-        elif mean_error < 0:
-
-            st.info(
-                "Predictions are currently lower "
-                "than actual demand by an average of "
-                f"{abs(mean_error):.2f} portions."
-            )
-
-        else:
-
-            st.success(
-                "Average prediction error is "
-                "currently zero."
-            )
-
-
-    # =====================================================
-    # PREDICTION HISTORY
-    # =====================================================
-
-    st.subheader(
-        "📋 Prediction History"
-    )
-
-
-    completed_records = [
-
-        record
-
-        for record in records
-
-        if record.get(
-            "actual_portions"
-        ) is not None
-
-    ]
-
-
-    if completed_records:
-
-        history_rows = []
-
-
-        for record in completed_records:
-
-            history_rows.append({
-
-                "Canteen": record.get(
-                    "canteen_name"
-                ),
-
-                "Date": record.get(
-                    "prediction_date"
-                ),
-
-                "Expected": record.get(
-                    "expected_portions"
-                ),
-
-                "Recommended": record.get(
-                    "recommended_portions"
-                ),
-
-                "Actual": record.get(
-                    "actual_portions"
-                ),
-
-                "Absolute Error": record.get(
-                    "absolute_error"
-                ),
-
-            })
-
-
-        st.dataframe(
-            history_rows,
-            use_container_width=True,
-            hide_index=True
-        )
-
-
-    else:
-
-        st.info(
-            "No completed operational "
-            "records available yet."
-        )
-
-
-    # =====================================================
-    # PERFORMANCE BY CANTEEN
-    # =====================================================
-
-    st.subheader(
-        "🏢 Performance by Canteen"
-    )
-
-
-    if completed_records:
-
-        canteen_stats = {}
-
-
-        for record in completed_records:
-
-            canteen = record.get(
-                "canteen_name",
-                record.get(
-                    "store_id"
-                )
-            )
-
-            error = record.get(
-                "absolute_error"
-            )
-
-            expected = record.get(
-                "expected_portions"
-            )
-
-            actual = record.get(
-                "actual_portions"
-            )
-
-
-            if canteen not in canteen_stats:
-
-                canteen_stats[canteen] = {
-
-                    "errors": [],
-
-                    "expected": [],
-
-                    "actual": []
-
-                }
-
-
-            if error is not None:
-
-                canteen_stats[
-                    canteen
-                ]["errors"].append(
-                    float(error)
-                )
-
-
-            if expected is not None:
-
-                canteen_stats[
-                    canteen
-                ]["expected"].append(
-                    float(expected)
-                )
-
-
-            if actual is not None:
-
-                canteen_stats[
-                    canteen
-                ]["actual"].append(
-                    float(actual)
-                )
-
-
-        canteen_rows = []
-
-
-        for canteen, values in canteen_stats.items():
-
-            errors = values["errors"]
-
-
-            if errors:
-
-                canteen_mae = (
-                    sum(errors)
-                    / len(errors)
-                )
-
-
-                canteen_rows.append({
-
-                    "Canteen": canteen,
-
-                    "Records": len(errors),
-
-                    "MAE": round(
-                        canteen_mae,
-                        2
-                    ),
-
-                    "Average Expected": round(
-
-                        sum(
-                            values["expected"]
-                        )
-                        / len(
-                            values["expected"]
-                        ),
-
-                        2
-
-                    ),
-
-                    "Average Actual": round(
-
-                        sum(
-                            values["actual"]
-                        )
-                        / len(
-                            values["actual"]
-                        ),
-
-                        2
-
-                    )
-
-                })
-
-
-        st.dataframe(
-            canteen_rows,
-            use_container_width=True,
-            hide_index=True
-        )
-
-
-    else:
-
-        st.info(
-            "Canteen-level monitoring will appear "
-            "after actual operational records "
-            "are collected."
-        )
-
-
-    # =====================================================
-    # OPERATIONAL CALIBRATION
-    # =====================================================
+            with st.spinner("Getting weather and generating prediction..."):
+                result = api_post("/predict", payload, timeout=30)
+            st.session_state["prediction"] = result
+            st.session_state["prediction_context"] = {
+                "store_id": canteen["store_id"],
+                "canteen_name": canteen["name"],
+                "prediction_date": prediction_date.isoformat(),
+            }
+            st.session_state.pop("actual_saved", None)
+            st.success("Food plan generated.")
+        except (requests.RequestException, RuntimeError) as exc:
+            st.error(f"Prediction failed: {exc}")
+
+    result = st.session_state.get("prediction")
+    if not result:
+        return
 
     st.divider()
+    st.markdown("**Weather forecast**")
+    weather_items = [
+        ("Max temperature", "temperature_max", "°C"),
+        ("Min temperature", "temperature_min", "°C"),
+        ("Average temperature", "temperature_mean", "°C"),
+        ("Rainfall", "precipitation_sum", "mm"),
+    ]
+    cols = st.columns(4)
+    for col, (label, key, unit) in zip(cols, weather_items):
+        value = result.get(key)
+        with col:
+            st.metric(label, f"{float(value):.1f} {unit}" if value is not None else "N/A")
+    sunshine = result.get("sunshine_sum")
+    if sunshine is not None:
+        st.caption(f"Sunshine: {float(sunshine):.2f} hours")
 
-    st.header(
-        "🔧 Operational Calibration"
-    )
+    st.markdown("**Recommended preparation**")
+    plan_items = [
+        ("Expected demand", "expected_portions"),
+        ("Safety buffer", "safety_buffer"),
+        ("Recommended portions", "recommended_portions"),
+    ]
+    cols = st.columns(3)
+    for col, (label, key) in zip(cols, plan_items):
+        with col:
+            st.metric(label, portion_text(result.get(key)))
 
-    st.caption(
-        "Calibration learns the relationship between "
-        "the public-data model prediction and actual "
-        "portion demand at each canteen."
-    )
+    if result.get("recommended_portions") is not None:
+        st.success(f"Prepare approximately {result['recommended_portions']} portions.")
 
+    st.divider()
+    st.markdown("**Record actual portions after service**")
+    record_id = result.get("record_id")
+    if record_id is None:
+        st.error("The prediction response is missing record_id. Check the FastAPI /predict response.")
+        return
 
-    # =====================================================
-    # SELECTED CANTEEN CALIBRATION STATUS
-    # =====================================================
+    saved = st.session_state.get("actual_saved")
+    if saved and saved.get("record_id", record_id) == record_id:
+        st.success("Actual portions saved.")
+        actual_result = saved
+    else:
+        actual = st.number_input(
+            "Actual portions sold / consumed",
+            min_value=0,
+            step=1,
+            value=0,
+            key=f"actual_portions_{record_id}",
+        )
+        if st.button("Save Actual Portions", key=f"save_actual_{record_id}"):
+            try:
+                actual_result = api_post(
+                    f"/actual/{record_id}",
+                    {"actual_portions": int(actual)},
+                    timeout=15,
+                )
+                actual_result.setdefault("record_id", record_id)
+                st.session_state["actual_saved"] = actual_result
+                st.rerun()
+            except (requests.RequestException, RuntimeError) as exc:
+                st.error(f"Could not save actual portions: {exc}")
+        return
 
-    st.subheader(
-        "📍 Selected Canteen Calibration"
-    )
-
-
-    selected_store_id = (
-        selected_canteen["store_id"]
-    )
-
+    expected = actual_result.get("expected_portions", result.get("expected_portions"))
+    actual_value = actual_result.get("actual_portions")
+    error = actual_result.get("absolute_error")
+    st.markdown("**Prediction result**")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Expected", portion_text(expected))
+    with c2:
+        st.metric("Actual", portion_text(actual_value))
+    with c3:
+        st.metric("Absolute error", portion_text(error))
 
     try:
-
-        calibration_response = requests.get(
-            f"{API_URL}/calibration/"
-            f"{selected_store_id}",
-            timeout=10
-        )
-
-        calibration_response.raise_for_status()
-
-        calibration_status = (
-            calibration_response.json()
-        )
-
-
-        observations = calibration_status.get(
-            "observations",
-            0
-        )
-
-        required = calibration_status.get(
-            "required_observations",
-            5
-        )
-
-        calibration_state = (
-            calibration_status.get(
-                "status"
-            )
-        )
-
-        calibration_method = (
-            calibration_status.get(
-                "method"
-            )
-        )
-
-
-        st.write(
-            f"**Canteen:** "
-            f"{selected_canteen['name']}"
-        )
-
-
-        st.progress(
-            min(
-                observations / required,
-                1.0
-            )
-        )
-
-
-        calibration_col1, calibration_col2 = (
-            st.columns(2)
-        )
-
-
-        with calibration_col1:
-
-            st.metric(
-                "Completed Observations",
-                f"{observations} / {required}"
-            )
-
-
-        with calibration_col2:
-
-            if calibration_state == "calibrated":
-
-                st.metric(
-                    "Status",
-                    "✅ Calibrated"
-                )
-
-            else:
-
-                st.metric(
-                    "Status",
-                    "⏳ Collecting Data"
-                )
-
-
-        if calibration_state == "calibrated":
-
-            st.success(
-                "This canteen has a learned "
-                "operational calibration."
-            )
-
-
-            if calibration_method:
-
-                st.write(
-                    f"**Method:** "
-                    f"{calibration_method}"
-                )
-
-
-            coefficient = (
-                calibration_status.get(
-                    "coefficient"
-                )
-            )
-
-            intercept = (
-                calibration_status.get(
-                    "intercept"
-                )
-            )
-
-            training_mae = (
-                calibration_status.get(
-                    "training_mae"
-                )
-            )
-
-
-            if coefficient is not None:
-
-                st.write(
-                    f"**Coefficient:** "
-                    f"{coefficient:.4f}"
-                )
-
-
-            if intercept is not None:
-
-                st.write(
-                    f"**Intercept:** "
-                    f"{intercept:.4f}"
-                )
-
-
-            if training_mae is not None:
-
-                st.write(
-                    f"**Calibration MAE:** "
-                    f"{training_mae:.2f} portions"
-                )
-
-
+        difference = float(actual_value) - float(expected)
+        if difference > 0:
+            st.info(f"Actual demand was {difference:.0f} portions higher than expected.")
+        elif difference < 0:
+            st.info(f"Actual demand was {abs(difference):.0f} portions lower than expected.")
         else:
-
-            remaining = max(
-                required - observations,
-                0
-            )
+            st.success("Expected demand matched actual demand.")
+    except (TypeError, ValueError):
+        pass
 
 
-            if remaining > 0:
+def render_dashboard():
+    st.subheader("Prediction monitoring")
+    try:
+        metrics = api_get("/metrics")
+        records = api_get("/records")
+    except requests.RequestException as exc:
+        st.error(f"Could not load dashboard data: {exc}")
+        return
 
-                st.info(
-                    f"Collect {remaining} more "
-                    f"completed operational "
-                    f"observation(s) before "
-                    f"calibration can be trained."
-                )
-
-
-            st.write(
-                "**Current method:** "
-                "Initial baseline"
-            )
-
-
-    except requests.RequestException as e:
-
-        st.error(
-            "Unable to load calibration status: "
-            f"{e}"
-        )
-
-
-    # =====================================================
-    # ALL CANTEEN CALIBRATION STATUS
-    # =====================================================
-
-    st.subheader(
-        "🏢 Calibration Status by Canteen"
+    done = completed_records(records)
+    mae, rmse, mean_error = (
+        metrics.get("mae"),
+        metrics.get("rmse"),
+        metrics.get("mean_error"),
     )
 
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("Completed records", metrics.get("records_with_actuals", len(done)))
+    with c2:
+        st.metric("MAE", f"{mae:.2f}" if mae is not None else "N/A")
+    with c3:
+        st.metric("RMSE", f"{rmse:.2f}" if rmse is not None else "N/A")
+    with c4:
+        st.metric("Mean error", f"{mean_error:+.2f}" if mean_error is not None else "N/A")
+    st.caption("Error values are in portions. MAE measures average absolute error; RMSE gives more weight to larger errors.")
+
+    if mean_error is not None:
+        st.info(f"Mean error (backend convention): {mean_error:+.2f} portions.")
+
+    st.divider()
+    st.markdown("**Completed prediction history**")
+    if not done:
+        st.info("No actual results have been recorded yet.")
+    else:
+        rows = [{
+            "Canteen": r.get("canteen_name", r.get("store_id")),
+            "Date": r.get("prediction_date"),
+            "Expected": r.get("expected_portions"),
+            "Recommended": r.get("recommended_portions"),
+            "Actual": r.get("actual_portions"),
+            "Absolute error": r.get("absolute_error"),
+            "Model version": r.get("model_version"),
+        } for r in done]
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+
+        grouped = {}
+        for r in done:
+            name = r.get("canteen_name", r.get("store_id", "Unknown"))
+            grouped.setdefault(name, []).append(r)
+
+        rows = []
+        for name, group in grouped.items():
+            errors = [float(r["absolute_error"]) for r in group if r.get("absolute_error") is not None]
+            expected_values = [float(r["expected_portions"]) for r in group if r.get("expected_portions") is not None]
+            actual_values = [float(r["actual_portions"]) for r in group if r.get("actual_portions") is not None]
+            rows.append({
+                "Canteen": name,
+                "Completed records": len(group),
+                "MAE (portions)": round(sum(errors) / len(errors), 2) if errors else None,
+                "Average expected": round(sum(expected_values) / len(expected_values), 2) if expected_values else None,
+                "Average actual": round(sum(actual_values) / len(actual_values), 2) if actual_values else None,
+            })
+        st.divider()
+        st.markdown("**Performance by canteen**")
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+
+
+def render_calibration(canteens):
+    st.subheader("Canteen calibration status")
+    names = [c["name"] for c in canteens]
+    selected_name = st.selectbox("Canteen", names, key="calibration_canteen")
+    canteen = next(c for c in canteens if c["name"] == selected_name)
 
     try:
+        status = api_get(f"/calibration/{canteen['store_id']}")
+    except requests.RequestException as exc:
+        st.error(f"Could not load calibration status: {exc}")
+        status = None
 
-        all_calibration_response = requests.get(
-            f"{API_URL}/calibration",
-            timeout=10
-        )
+    if status:
+        observations = int(status.get("observations", 0) or 0)
+        required = max(int(status.get("required_observations", 5) or 5), 1)
+        state = status.get("status", "not_calibrated")
+        method = status.get("method", "initial_baseline")
+        st.progress(min(observations / required, 1.0))
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.metric("Observations", f"{observations} / {required}")
+        with c2:
+            st.metric("Status", "Calibrated" if state == "calibrated" else "Collecting data")
+        with c3:
+            st.metric("Method", method.replace("_", " ").title())
 
-        all_calibration_response.raise_for_status()
-
-        all_calibrations = (
-            all_calibration_response.json()
-        )
-
-
-        calibration_rows = []
-
-
-        for canteen in canteens:
-
-            store_id = canteen[
-                "store_id"
-            ]
-
-            canteen_name = canteen[
-                "name"
-            ]
-
-
-            calibration_info = (
-                all_calibrations.get(
-                    store_id
-                )
+        if state == "calibrated":
+            c1, c2, c3 = st.columns(3)
+            coefficient, intercept, training_mae = (
+                status.get("coefficient"),
+                status.get("intercept"),
+                status.get("training_mae"),
+            )
+            with c1:
+                st.metric("Coefficient", f"{coefficient:.4f}" if coefficient is not None else "N/A")
+            with c2:
+                st.metric("Intercept", f"{intercept:.4f}" if intercept is not None else "N/A")
+            with c3:
+                st.metric("Calibration MAE", f"{training_mae:.2f} portions" if training_mae is not None else "N/A")
+        else:
+            st.info(
+                f"Initial baseline is in use. Collect {max(required - observations, 0)} "
+                "more completed observation(s) before calibration can be trained."
             )
 
-
-            # ---------------------------------------------
-            # Count completed operational records
-            # ---------------------------------------------
-
-            completed_count = sum(
-
-                1
-
-                for record in completed_records
-
-                if record.get(
-                    "store_id"
-                ) == store_id
-
-            )
-
-
-            if calibration_info:
-
-                observations = (
-                    calibration_info.get(
-                        "observations",
-                        completed_count
-                    )
-                )
-
-                status = "Calibrated"
-
-                method = calibration_info.get(
-                    "method",
-                    "linear_calibration"
-                )
-
-            else:
-
-                observations = (
-                    completed_count
-                )
-
-                status = "Not Calibrated"
-
-                method = "initial_baseline"
-
-
-            calibration_rows.append({
-
-                "Canteen": canteen_name,
-
-                "Observations": (
-                    f"{observations} / 5"
-                ),
-
-                "Status": status,
-
-                "Method": method
-
+    st.divider()
+    st.markdown("**All canteens**")
+    try:
+        all_calibrations = api_get("/calibration")
+        records = completed_records(api_get("/records"))
+        rows = []
+        for item in canteens:
+            sid = item["store_id"]
+            info = all_calibrations.get(sid)
+            count = sum(1 for r in records if r.get("store_id") == sid)
+            rows.append({
+                "Canteen": item["name"],
+                "Observations": f"{info.get('observations', count) if info else count} / 5",
+                "Status": "Calibrated" if info else "Not calibrated",
+                "Method": info.get("method", "linear_calibration") if info else "initial_baseline",
             })
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+    except requests.RequestException as exc:
+        st.error(f"Could not load calibration summary: {exc}")
 
 
-        st.dataframe(
-            calibration_rows,
-            use_container_width=True,
-            hide_index=True
-        )
+with food_tab:
+    canteens = load_canteens()
+    render_food_plan(canteens)
 
+with dashboard_tab:
+    render_dashboard()
 
-    except requests.RequestException as e:
+with calibration_tab:
+    canteens = load_canteens()
+    render_calibration(canteens)
 
-        st.error(
-            "Unable to load all calibration "
-            f"statuses: {e}"
-        )
+st.caption("Smart Food Demand Forecasting and Waste Reduction System")
