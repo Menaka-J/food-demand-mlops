@@ -32,4 +32,4 @@ RUN sed -i 's/\r$//' /app/render-start.sh \
 
 EXPOSE 10000
 
-CMD ["/app/render-start.sh"]
+CMD ["bash", "/app/render-start.sh"]
