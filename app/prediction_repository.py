@@ -1,179 +1,233 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
-from sqlalchemy.orm import Session
+from bson import ObjectId
+from pymongo import ReturnDocument
 
+from app.database import prediction_collection
 from app.calibration import DemandCalibration
-from app.models import PredictionRecord
 
 
-def save_prediction(db: Session, result: dict) -> PredictionRecord:
-    """
-    Save a prediction.
+def utc_now():
+    return datetime.now(timezone.utc)
 
-    Prevent duplicate predictions for the same canteen and date.
-    """
 
-    prediction_date = datetime.strptime(
-        result["prediction_date"], "%Y-%m-%d"
-    ).date()
+def serialize_record(record):
+    """Convert MongoDB values into JSON-friendly values."""
 
-    existing = (
-        db.query(PredictionRecord)
-        .filter(
-            PredictionRecord.store_id == result["store_id"],
-            PredictionRecord.prediction_date == prediction_date,
+    if record is None:
+        return None
+
+    result = dict(record)
+    result["id"] = str(result.pop("_id"))
+
+    for key in ("created_at", "actual_recorded_at"):
+        value = result.get(key)
+        if value is not None:
+            result[key] = value.isoformat()
+
+    return result
+
+
+def save_prediction(result: dict) -> dict:
+    """Save or return the existing prediction for a canteen/date."""
+
+    prediction_date = result["prediction_date"]
+    store_id = result["store_id"]
+
+    document = {
+        "store_id": store_id,
+        "canteen_name": result["canteen_name"],
+        "prediction_date": prediction_date,
+
+        "is_state_holiday": int(
+            result["calendar"]["is_state_holiday"]
+        ),
+        "is_school_holiday": int(
+            result["calendar"]["is_school_holiday"]
+        ),
+        "is_special_day": int(
+            result["calendar"]["is_special_day"]
+        ),
+
+        "temperature_max": float(
+            result["weather"]["temperature_max"]
+        ),
+        "temperature_min": float(
+            result["weather"]["temperature_min"]
+        ),
+        "temperature_mean": float(
+            result["weather"]["temperature_mean"]
+        ),
+        "sunshine_sum": float(
+            result["weather"]["sunshine_sum"]
+        ),
+        "precipitation_sum": float(
+            result["weather"]["precipitation_sum"]
+        ),
+
+        "sales_lag_1": float(
+            result["historical_features"]["sales_lag_1"]
+        ),
+        "sales_lag_7": float(
+            result["historical_features"]["sales_lag_7"]
+        ),
+        "sales_rolling_mean_7": float(
+            result["historical_features"]["sales_rolling_mean_7"]
+        ),
+
+        "scaled_prediction": float(
+            result["scaled_prediction"]
+        ),
+        "expected_portions": float(
+            result["expected_portions"]
+        ),
+        "safety_buffer": int(result["safety_buffer"]),
+        "recommended_portions": int(
+            result["recommended_portions"]
+        ),
+
+        "actual_portions": None,
+        "absolute_error": None,
+
+        "model_version": result["model_version"],
+        "calibration_version": result["calibration_version"],
+
+        "created_at": utc_now(),
+        "actual_recorded_at": None,
+    }
+
+    # Idempotent insert: return an existing record for this date
+    # instead of creating a duplicate.
+    try:
+        prediction_collection.update_one(
+            {
+                "store_id": store_id,
+                "prediction_date": prediction_date,
+            },
+            {"$setOnInsert": document},
+            upsert=True,
         )
-        .first()
+    except Exception:
+        # The unique index protects against simultaneous duplicate
+        # requests. Re-read below if another request inserted first.
+        existing = prediction_collection.find_one(
+            {
+                "store_id": store_id,
+                "prediction_date": prediction_date,
+            }
+        )
+        if existing is None:
+            raise
+
+    record = prediction_collection.find_one(
+        {
+            "store_id": store_id,
+            "prediction_date": prediction_date,
+        }
     )
 
-    if existing is not None:
-        return existing
+    return serialize_record(record)
 
-    record = PredictionRecord(
-        store_id=result["store_id"],
-        canteen_name=result["canteen_name"],
-        prediction_date=prediction_date,
 
-        is_state_holiday=result["calendar"]["is_state_holiday"],
-        is_school_holiday=result["calendar"]["is_school_holiday"],
-        is_special_day=result["calendar"]["is_special_day"],
+def get_record(record_id: str) -> dict | None:
+    if not ObjectId.is_valid(record_id):
+        return None
 
-        temperature_max=result["weather"]["temperature_max"],
-        temperature_min=result["weather"]["temperature_min"],
-        temperature_mean=result["weather"]["temperature_mean"],
-        sunshine_sum=result["weather"]["sunshine_sum"],
-        precipitation_sum=result["weather"]["precipitation_sum"],
-
-        sales_lag_1=result["historical_features"]["sales_lag_1"],
-        sales_lag_7=result["historical_features"]["sales_lag_7"],
-        sales_rolling_mean_7=result["historical_features"]["sales_rolling_mean_7"],
-
-        scaled_prediction=result["scaled_prediction"],
-        expected_portions=result["expected_portions"],
-        safety_buffer=result["safety_buffer"],
-        recommended_portions=result["recommended_portions"],
-
-        model_version=result["model_version"],
-        calibration_version=result["calibration_version"],
-
-        created_at=datetime.utcnow(),
+    record = prediction_collection.find_one(
+        {"_id": ObjectId(record_id)}
     )
 
-    db.add(record)
-    db.commit()
-    db.refresh(record)
-
-    return record
+    return serialize_record(record)
 
 
-def save_actual(
-    db: Session,
-    record_id: int,
-    actual_portions: int,
-) -> PredictionRecord:
-    """
-    Save the actual portions consumed/sold for a prediction.
-
-    Once a canteen reaches the minimum number of genuine completed
-    observations, automatically train its operational calibration.
-    """
+def save_actual(record_id: str, actual_portions: int) -> dict:
+    """Record actual portions and retrain calibration when eligible."""
 
     if actual_portions < 0:
         raise ValueError("Actual portions cannot be negative.")
 
-    record = (
-        db.query(PredictionRecord)
-        .filter(PredictionRecord.id == record_id)
-        .first()
+    if not ObjectId.is_valid(record_id):
+        raise ValueError("Invalid prediction record ID.")
+
+    existing = prediction_collection.find_one(
+        {"_id": ObjectId(record_id)}
     )
 
-    if record is None:
+    if existing is None:
         raise ValueError("Prediction record not found.")
 
-    if record.actual_portions is not None:
+    if existing.get("actual_portions") is not None:
         raise ValueError("Actual portions have already been recorded.")
 
-    record.actual_portions = actual_portions
-
-    # Error = expected - actual
-    record.absolute_error = abs(
-        record.expected_portions - actual_portions
+    absolute_error = abs(
+        float(existing["expected_portions"]) - actual_portions
     )
 
-    record.actual_recorded_at = datetime.utcnow()
+    # Conditional update prevents two requests from recording
+    # actual portions for the same record at the same time.
+    updated = prediction_collection.find_one_and_update(
+        {
+            "_id": ObjectId(record_id),
+            "actual_portions": None,
+        },
+        {
+            "$set": {
+                "actual_portions": int(actual_portions),
+                "absolute_error": float(absolute_error),
+                "actual_recorded_at": utc_now(),
+            }
+        },
+        return_document=ReturnDocument.AFTER,
+    )
 
-    db.commit()
-    db.refresh(record)
-
-    # ---------------------------------------------------------
-    # AUTOMATIC OPERATIONAL CALIBRATION
-    # ---------------------------------------------------------
-    #
-    # Calibration is trained independently for each canteen.
-    # It requires at least 5 genuine completed observations.
-    #
-    # We only use records that have:
-    #   1. a scaled prediction
-    #   2. an actual operational portion value
-    #
-    # We DO NOT modify the base MLflow model.
-    # ---------------------------------------------------------
-
-    completed_records = (
-        db.query(PredictionRecord)
-        .filter(
-            PredictionRecord.store_id == record.store_id,
-            PredictionRecord.actual_portions.isnot(None),
-            PredictionRecord.scaled_prediction.isnot(None),
+    if updated is None:
+        raise ValueError(
+            "Actual portions have already been recorded."
         )
-        .order_by(PredictionRecord.prediction_date.asc())
-        .all()
+
+    store_id = updated["store_id"]
+
+    completed = list(
+        prediction_collection.find(
+            {
+                "store_id": store_id,
+                "actual_portions": {"$ne": None},
+                "scaled_prediction": {"$ne": None},
+            }
+        ).sort("prediction_date", 1)
     )
 
-    if len(completed_records) >= DemandCalibration.MIN_OBSERVATIONS:
-
-        scaled_predictions = [
-            float(r.scaled_prediction)
-            for r in completed_records
-        ]
-
-        actual_portions_list = [
-            float(r.actual_portions)
-            for r in completed_records
-        ]
-
+    if len(completed) >= DemandCalibration.MIN_OBSERVATIONS:
         calibration = DemandCalibration()
 
         calibration.fit_canteen(
-            store_id=record.store_id,
-            scaled_predictions=scaled_predictions,
-            actual_portions=actual_portions_list,
+            store_id=store_id,
+            scaled_predictions=[
+                float(r["scaled_prediction"]) for r in completed
+            ],
+            actual_portions=[
+                float(r["actual_portions"]) for r in completed
+            ],
         )
 
-    return record
+    return serialize_record(updated)
 
 
-def get_completed_records(
-    db: Session,
-    store_id: str | None = None,
-):
-    """
-    Return prediction records for which actual portions
-    have already been recorded.
-    """
-
-    query = (
-        db.query(PredictionRecord)
-        .filter(PredictionRecord.actual_portions.isnot(None))
+def get_all_records():
+    records = prediction_collection.find().sort(
+        "prediction_date", -1
     )
+    return [serialize_record(record) for record in records]
+
+
+def get_completed_records(store_id: str | None = None):
+    query = {"actual_portions": {"$ne": None}}
 
     if store_id is not None:
-        query = query.filter(
-            PredictionRecord.store_id == store_id
-        )
+        query["store_id"] = store_id
 
-    return (
-        query
-        .order_by(PredictionRecord.prediction_date.asc())
-        .all()
+    records = prediction_collection.find(query).sort(
+        "prediction_date", 1
     )
+
+    return [serialize_record(record) for record in records]

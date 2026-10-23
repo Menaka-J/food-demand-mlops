@@ -1,13 +1,7 @@
+from app.database import initialize_database, database
 
-from app.mongodb import (
-    check_mongodb_connection,
-    close_mongodb_connection,
-    db,
-)
+initialize_database()
 
-try:
-    check_mongodb_connection()
-    print("MongoDB Atlas connection successful!")
-    print("Database:", db.name)
-finally:
-    close_mongodb_connection()
+print("MongoDB connection successful!")
+print("Database:", database.name)
+print("Collections:", database.list_collection_names())

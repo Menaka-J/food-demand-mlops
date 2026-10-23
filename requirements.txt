@@ -3,12 +3,9 @@ numpy
 scikit-learn
 matplotlib
 seaborn
-jupyter
-ipykernel
 mlflow==3.16.1
 fastapi
-uvicorn
-sqlalchemy
+uvicorn[standard]
 pydantic
 streamlit
 requests

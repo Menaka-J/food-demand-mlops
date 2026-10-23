@@ -1,41 +1,66 @@
-from pathlib import Path
-import os 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+import os
+
+from pymongo import MongoClient, ASCENDING, DESCENDING
+from pymongo.server_api import ServerApi
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+MONGODB_URI = os.getenv("MONGODB_URI")
+MONGODB_DATABASE = os.getenv("MONGODB_DATABASE", "food_demand")
 
-DATABASE_PATH = PROJECT_ROOT / "data" / "app.db"
+if not MONGODB_URI:
+    raise RuntimeError(
+        "MONGODB_URI is missing. Set it in your environment."
+    )
 
-DATABASE_PATH.parent.mkdir(
-    parents=True,
-    exist_ok=True,
+client = MongoClient(
+    MONGODB_URI,
+    server_api=ServerApi("1"),
+    serverSelectionTimeoutMS=10000,
 )
 
+database = client[MONGODB_DATABASE]
 
-DATABASE_URL = os.getenv("DATABASE_URL","sqlite:///data/app.db",)
-
-
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={
-        "check_same_thread": False
-    },
-)
+prediction_collection = database["prediction_records"]
+calibration_collection = database["canteen_calibrations"]
 
 
-SessionLocal = sessionmaker(
-    bind=engine,
-    autoflush=False,
-    autocommit=False,
-)
+def initialize_database():
+    """Check connectivity and create useful indexes."""
+
+    client.admin.command("ping")
+
+    # One prediction per canteen per prediction date.
+    prediction_collection.create_index(
+        [
+            ("store_id", ASCENDING),
+            ("prediction_date", ASCENDING),
+        ],
+        unique=True,
+        name="unique_canteen_prediction_date",
+    )
+
+    prediction_collection.create_index(
+        [("prediction_date", DESCENDING)],
+        name="prediction_date_index",
+    )
+
+    prediction_collection.create_index(
+        [
+            ("store_id", ASCENDING),
+            ("actual_portions", ASCENDING),
+        ],
+        name="canteen_actuals_index",
+    )
+
+    calibration_collection.create_index(
+        [("store_id", ASCENDING)],
+        unique=True,
+        name="unique_canteen_calibration",
+    )
+
+    print("MongoDB connected successfully.")
+    print(f"Database: {MONGODB_DATABASE}")
 
 
-def get_db():
-    db = SessionLocal()
-
-    try:
-        yield db
-    finally:
-        db.close()
+if __name__ == "__main__":
+    initialize_database()
