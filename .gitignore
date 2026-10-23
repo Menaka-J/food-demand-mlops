@@ -29,7 +29,9 @@ mlruns/
 
 # Generated models
 *.pkl
+# Ignore joblib files generally, but include the deployment models
 *.joblib
+!models/*.joblib
 *.onnx
 
 # Processed/generated data
