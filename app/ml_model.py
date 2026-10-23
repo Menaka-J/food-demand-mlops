@@ -1,82 +1,63 @@
 
-import os
+from pathlib import Path
 
-import mlflow
-import mlflow.sklearn
+import joblib
 import pandas as pd
 
 
-MODEL_URI = os.getenv(
-    "MODEL_URI",
-    "models:/SmartFoodDemandModel/1",
+MODEL_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "models"
+    / "candidate_model.joblib"
 )
 
-TRACKING_URI = os.getenv(
-    "MLFLOW_TRACKING_URI",
-    (
-        "sqlite:///C:/Users/Menaka/"
-        "Videos/smart-food-demand-mlops/mlflow.db"
-    ),
-)
+FEATURE_ORDER = [
+    "store",
+    "is_state_holiday",
+    "is_school_holiday",
+    "is_special_day",
+    "temperature_max",
+    "temperature_min",
+    "temperature_mean",
+    "sunshine_sum",
+    "precipitation_sum",
+    "year",
+    "month",
+    "day",
+    "day_of_week",
+    "week_of_year",
+    "quarter",
+    "is_weekend",
+    "sales_lag_1",
+    "sales_lag_7",
+    "sales_rolling_mean_7",
+]
 
 
 class DemandModel:
-
     def __init__(self):
-        mlflow.set_tracking_uri(TRACKING_URI)
-
-        print("Loading MLflow model...")
-        print(f"Tracking URI: {TRACKING_URI}")
-        print(f"Model URI: {MODEL_URI}")
-
-        self.model = mlflow.sklearn.load_model(MODEL_URI)
-
-        print("MLflow model loaded successfully.")
-
-    def predict(self, features: dict) -> float:
-        feature_order = [
-            "store",
-            "is_state_holiday",
-            "is_school_holiday",
-            "is_special_day",
-            "temperature_max",
-            "temperature_min",
-            "temperature_mean",
-            "sunshine_sum",
-            "precipitation_sum",
-            "year",
-            "month",
-            "day",
-            "day_of_week",
-            "week_of_year",
-            "quarter",
-            "is_weekend",
-            "sales_lag_1",
-            "sales_lag_7",
-            "sales_rolling_mean_7",
-        ]
-
-        missing_features = [
-            column
-            for column in feature_order
-            if column not in features
-        ]
-
-        if missing_features:
-            raise ValueError(
-                "Missing model features: "
-                + ", ".join(missing_features)
+        if not MODEL_PATH.exists():
+            raise FileNotFoundError(
+                f"Trained model not found: {MODEL_PATH}"
             )
 
-        input_data = pd.DataFrame(
-            [
-                {
-                    column: features[column]
-                    for column in feature_order
-                }
-            ]
+        self.model = joblib.load(MODEL_PATH)
+
+    def predict(self, features: dict) -> float:
+        missing = [
+            name for name in FEATURE_ORDER
+            if name not in features
+        ]
+
+        if missing:
+            raise ValueError(
+                f"Missing model features: {missing}"
+            )
+
+        frame = pd.DataFrame(
+            [[features[name] for name in FEATURE_ORDER]],
+            columns=FEATURE_ORDER,
         )
 
-        prediction = self.model.predict(input_data)[0]
-
-        return float(prediction)
+        prediction = self.model.predict(frame)
+        return float(prediction[0])
